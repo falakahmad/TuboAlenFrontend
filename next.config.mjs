@@ -9,6 +9,9 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  output: 'standalone',
+  // Ensure proper routing for Vercel
+  trailingSlash: false,
 }
 
 export default nextConfig
