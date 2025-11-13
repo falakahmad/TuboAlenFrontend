@@ -13,6 +13,8 @@ export interface FileItem {
   uploaded?: boolean
   uploadError?: string
   status?: "uploading" | "uploaded" | "processing" | "completed" | "error"
+  fileContent?: string // Base64 encoded file content for serverless compatibility
+  temp_path?: string
 }
 
 interface FileContextType {

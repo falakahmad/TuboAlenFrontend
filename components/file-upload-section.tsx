@@ -31,6 +31,32 @@ export default function FileUploadSection() {
         uploaded: false,
       }
       
+      // Read file content and store it for serverless compatibility
+      // In serverless, temp files don't persist, so we need to include content in refinement request
+      let fileContentBase64: string | null = null
+      try {
+        // Use FileReader for better binary file handling
+        const reader = new FileReader()
+        fileContentBase64 = await new Promise<string | null>((resolve) => {
+          reader.onload = () => {
+            // FileReader.result contains base64 string with data URL prefix
+            const result = reader.result as string
+            // Remove data URL prefix (e.g., "data:application/pdf;base64,")
+            const base64 = result.split(',')[1] || result
+            resolve(base64)
+          }
+          reader.onerror = () => {
+            console.error('Failed to read file content')
+            resolve(null)
+          }
+          // Read as data URL (base64)
+          reader.readAsDataURL(file)
+        })
+      } catch (error) {
+        console.error('Failed to read file content:', error)
+        fileContentBase64 = null
+      }
+      
       // Add file to context immediately
       addFile(newFile)
       setUploadingFiles(prev => new Set(prev).add(fileId))
@@ -57,7 +83,9 @@ export default function FileUploadSection() {
             // Store temp_path for backend file resolution
             temp_path: result.temp_path || result.file_path,
             // Backend returns temp_path; use that as source path
-            source: result.temp_path || result.file_path || file.name 
+            source: result.temp_path || result.file_path || file.name,
+            // Store file content for serverless (temp files don't persist)
+            fileContent: fileContentBase64
           })
         } else {
           updateFile(fileId, { 

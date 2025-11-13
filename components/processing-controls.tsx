@@ -224,7 +224,10 @@ export default function ProcessingControls() {
         source: (file as any).temp_path || file.source,
         temp_path: (file as any).temp_path || file.source,
         path: (file as any).temp_path || file.source, // Also include 'path' field
-        driveId: (file as any).driveId
+        driveId: (file as any).driveId,
+        // Include file content for serverless (temp files don't persist between invocations)
+        content: (file as any).fileContent || undefined,
+        data: (file as any).fileContent || undefined // Also support 'data' field
       }))
       
       await refinerClient.startRefinement(
