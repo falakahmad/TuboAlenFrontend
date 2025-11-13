@@ -52,8 +52,10 @@ export default function FileUploadSection() {
           updateFile(fileId, { 
             uploaded: true,
             status: "uploaded",
-            // Use backend identifiers to drive refine payload
+            // Use backend file_id as the primary identifier for refinement
             driveId: result.file_id,
+            // Store temp_path for backend file resolution
+            temp_path: result.temp_path || result.file_path,
             // Backend returns temp_path; use that as source path
             source: result.temp_path || result.file_path || file.name 
           })

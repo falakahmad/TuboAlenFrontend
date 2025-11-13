@@ -201,11 +201,14 @@ export default function ProcessingControls() {
           const files = selectedInputPath 
         ? [{ id: "selected_file", name: "Selected File", type: "local" as const, source: selectedInputPath }]
         : getUploadedFiles().map(file => ({
+            // Use backend file_id if available (from upload response), otherwise use frontend id
             id: (file as any).driveId || file.id,
             name: file.name,
             // Narrow to allowed union for API contract
             type: (file.type === 'drive' ? 'drive' : 'local') as 'local' | 'drive',
-            source: file.source,
+            // Ensure temp_path is passed for backend file resolution
+            source: file.source || (file as any).temp_path,
+            temp_path: (file as any).temp_path || file.source,
             driveId: (file as any).driveId
           }))
       
