@@ -16,7 +16,6 @@ import DiffViewer from "@/components/diff-viewer"
 import ConversationalChat from "@/components/conversational-chat"
 import PlanKnobs from "@/components/plan-knobs"
 import AdminAnalytics from "@/components/admin-analytics"
-import UsageSummary from "@/components/usage-summary"
 import { useEffect } from "react"
 import { useProcessing } from "@/contexts/ProcessingContext"
 import { FileProvider } from "@/contexts/FileContext"
@@ -170,9 +169,6 @@ export default function Dashboard() {
                 }
               })()}
             </div>
-          </div>
-          <div className="mb-6">
-            <UsageSummary />
           </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

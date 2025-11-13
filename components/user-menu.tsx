@@ -1,8 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import Image from "next/image"
-import { refinerClient } from "@/lib/refiner-client"
 
 interface UserInfo {
   id: string
@@ -16,8 +15,6 @@ export default function UserMenu() {
   const [open, setOpen] = useState(false)
   const [user, setUser] = useState<UserInfo | null>(null)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [analytics, setAnalytics] = useState<any | null>(null)
-  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     try {
@@ -60,38 +57,6 @@ export default function UserMenu() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!open) return
-    let canceled = false
-    const load = async () => {
-      setLoading(true)
-      try {
-        const data = await refinerClient.getAnalytics()
-        if (!canceled) setAnalytics(data)
-      } catch {
-      } finally {
-        if (!canceled) setLoading(false)
-      }
-    }
-    load()
-    const t = setInterval(load, 10000)
-    return () => { canceled = true; clearInterval(t) }
-  }, [open])
-
-  const usageSummary = useMemo(() => {
-    if (!analytics) return null
-    const jobs = analytics.jobs || {}
-    const openai = analytics.openai || {}
-    return {
-      totalJobs: jobs.totalJobs || 0,
-      completed: jobs.completed || 0,
-      running: jobs.running || 0,
-      failed: jobs.failed || 0,
-      totalRequests: openai.total_requests || 0,
-      tokensIn: openai.total_tokens_in || 0,
-      tokensOut: openai.total_tokens_out || 0,
-    }
-  }, [analytics])
 
   // Only show user menu if user exists AND is authenticated
   if (!user || !isAuthenticated) return null
@@ -128,40 +93,6 @@ export default function UserMenu() {
               <div className="text-xs text-muted-foreground truncate">{user.email}</div>
             </div>
           </div>
-
-          <div className="text-xs text-muted-foreground">Usage</div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Jobs</div>
-              <div className="text-foreground font-medium">{usageSummary?.totalJobs ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Completed</div>
-              <div className="text-foreground font-medium">{usageSummary?.completed ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Running</div>
-              <div className="text-foreground font-medium">{usageSummary?.running ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Failed</div>
-              <div className="text-foreground font-medium">{usageSummary?.failed ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded col-span-2">
-              <div className="text-xs text-muted-foreground">OpenAI Requests (all time)</div>
-              <div className="text-foreground font-medium">{usageSummary?.totalRequests ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Tokens In</div>
-              <div className="text-foreground font-medium">{usageSummary?.tokensIn ?? 0}</div>
-            </div>
-            <div className="p-2 bg-muted rounded">
-              <div className="text-xs text-muted-foreground">Tokens Out</div>
-              <div className="text-foreground font-medium">{usageSummary?.tokensOut ?? 0}</div>
-            </div>
-          </div>
-
-          {loading && <div className="text-xs text-muted-foreground">Syncing…</div>}
 
           <div className="flex items-center justify-between gap-2">
             <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen(false)}>Close</button>
