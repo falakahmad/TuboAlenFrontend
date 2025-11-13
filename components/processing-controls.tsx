@@ -197,23 +197,26 @@ export default function ProcessingControls() {
     try {
       
       
-      // Use selected input path if available, otherwise fall back to uploaded files
-          const files = selectedInputPath 
-        ? [{ id: "selected_file", name: "Selected File", type: "local" as const, source: selectedInputPath }]
-        : getUploadedFiles()
-            .filter(file => file.uploaded) // Only include successfully uploaded files
-            .map(file => ({
-            // Use backend file_id as the primary identifier (from upload response)
-            id: (file as any).driveId || file.id,
-            name: file.name,
-            // Narrow to allowed union for API contract
-            type: (file.type === 'drive' ? 'drive' : 'local') as 'local' | 'drive',
-            // Ensure temp_path is passed for backend file resolution (critical for serverless)
-            source: (file as any).temp_path || file.source,
-            temp_path: (file as any).temp_path || file.source,
-            path: (file as any).temp_path || file.source, // Also include 'path' field
-            driveId: (file as any).driveId
-          }))
+      // In serverless environment, we can't use file browser selection
+      // Files must be uploaded first. Only use uploaded files.
+      const uploadedFilesList = getUploadedFiles().filter(file => file.uploaded)
+      
+      if (uploadedFilesList.length === 0) {
+        throw new Error("Please upload a file first. File browser selection is not supported in serverless environments.")
+      }
+      
+      const files = uploadedFilesList.map(file => ({
+        // Use backend file_id as the primary identifier (from upload response)
+        id: (file as any).driveId || file.id,
+        name: file.name,
+        // Narrow to allowed union for API contract
+        type: (file.type === 'drive' ? 'drive' : 'local') as 'local' | 'drive',
+        // Ensure temp_path is passed for backend file resolution (critical for serverless)
+        source: (file as any).temp_path || file.source,
+        temp_path: (file as any).temp_path || file.source,
+        path: (file as any).temp_path || file.source, // Also include 'path' field
+        driveId: (file as any).driveId
+      }))
       
       await refinerClient.startRefinement(
         {

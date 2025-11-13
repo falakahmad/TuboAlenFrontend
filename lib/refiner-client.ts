@@ -229,33 +229,12 @@ export class RefinerClient {
                 
                 // Try to open WS to backend directly (bypass Next.js)
                 try {
-                  let backend = process.env.NEXT_PUBLIC_REFINER_BACKEND_WS_URL
+                  // In browser, always use wss:// for production backend
+                  // Environment variables may not be accessible at runtime in browser
+                  const backendHost = 'turbo-alen-backend.vercel.app'
+                  const wsBase = `wss://${backendHost}`
                   
-                  // If not set, try to construct from baseUrl or use backend URL
-                  if (!backend) {
-                    if (this.baseUrl && this.baseUrl.startsWith('http')) {
-                      // baseUrl is absolute (server-side)
-                      backend = this.baseUrl
-                    } else if (this.baseUrl === '/api' || !this.baseUrl) {
-                      // baseUrl is relative (client-side), use backend URL from env
-                      backend = process.env.NEXT_PUBLIC_REFINER_BACKEND_URL || 'https://turbo-alen-backend.vercel.app'
-                    } else {
-                      backend = this.baseUrl
-                    }
-                  }
-                  
-                  if (backend) {
-                    // Convert http:// to ws:// and https:// to wss://
-                    let wsBase = backend.replace(/^https?:\/\//, (match) => {
-                      return match === "https://" ? "wss://" : "ws://"
-                    }).replace(/\/$/, "")
-                    
-                    // If still no protocol, assume wss:// for production
-                    if (!wsBase.startsWith('ws')) {
-                      wsBase = `wss://${wsBase.replace(/^\/+/, '')}`
-                    }
-                    
-                    ws = new WebSocket(`${wsBase}/ws/progress/${jobId}`)
+                  ws = new WebSocket(`${wsBase}/ws/progress/${jobId}`)
                     ws.onmessage = (m) => {
                       try {
                         const e = JSON.parse(String(m.data))
