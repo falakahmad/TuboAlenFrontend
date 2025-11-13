@@ -235,32 +235,25 @@ export class RefinerClient {
                   const wsBase = `wss://${backendHost}`
                   
                   ws = new WebSocket(`${wsBase}/ws/progress/${jobId}`)
-                    ws.onmessage = (m) => {
-                      try {
-                        const e = JSON.parse(String(m.data))
-                        if (e && e.type) {
-                          
-                          onEvent(e)
-                          // Don't stop here - stream cleanup handles it
-                        }
-                      } catch {}
-                    }
-                    ws.onerror = () => {
-                      
-                      // fallback to polling only if not already terminated
-                      if (!isTerminated && !pollTimer) startPolling()
-                    }
-                    ws.onclose = (closeEvent) => {
-                      
-                      // only poll on abnormal close and not terminated
-                      if (!isTerminated && !pollTimer && closeEvent.code !== 1000) startPolling()
-                    }
-                  } else {
-                    // No backend URL exposed for WS, fallback
+                  ws.onmessage = (m) => {
+                    try {
+                      const e = JSON.parse(String(m.data))
+                      if (e && e.type) {
+                        onEvent(e)
+                        // Don't stop here - stream cleanup handles it
+                      }
+                    } catch {}
+                  }
+                  ws.onerror = () => {
+                    // fallback to polling only if not already terminated
                     if (!isTerminated && !pollTimer) startPolling()
                   }
+                  ws.onclose = (closeEvent) => {
+                    // only poll on abnormal close and not terminated
+                    if (!isTerminated && !pollTimer && closeEvent.code !== 1000) startPolling()
+                  }
                 } catch {
-                  
+                  // Fallback to polling if WebSocket fails
                   if (!isTerminated && !pollTimer) startPolling()
                 }
             }
