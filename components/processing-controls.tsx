@@ -15,7 +15,7 @@ import DownloadModal from "./download-modal"
 import { Download } from "lucide-react"
 
 export default function ProcessingControls() {
-  const { getUploadedFiles } = useFiles()
+  const { getUploadedFiles, files } = useFiles()
   const { processingEvents, addProcessingEvent, isProcessing, setIsProcessing, clearProcessingEvents } = useProcessing()
   const { schemaLevels } = useSchema()
   const [selectedInputPath, setSelectedInputPath] = useState("")
@@ -199,10 +199,19 @@ export default function ProcessingControls() {
       
       // In serverless environment, we can't use file browser selection
       // Files must be uploaded first. Only use uploaded files.
-      const uploadedFilesList = getUploadedFiles().filter(file => file.uploaded)
+      const allFiles = getUploadedFiles()
+      const uploadedFilesList = allFiles.filter(file => 
+        file.uploaded === true || file.status === "uploaded" || file.status === "completed"
+      )
       
       if (uploadedFilesList.length === 0) {
-        throw new Error("Please upload a file first. File browser selection is not supported in serverless environments.")
+        const totalFiles = getUploadedFiles().length
+        const allFilesCount = files.length
+        throw new Error(
+          `Please upload a file first. ` +
+          `Found ${totalFiles} uploaded files, ${allFilesCount} total files. ` +
+          `File browser selection is not supported in serverless environments.`
+        )
       }
       
       const files = uploadedFilesList.map(file => ({
