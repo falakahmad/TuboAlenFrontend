@@ -17,7 +17,7 @@ import { Download } from "lucide-react"
 export default function ProcessingControls() {
   const { getUploadedFiles, files } = useFiles()
   const { processingEvents, addProcessingEvent, isProcessing, setIsProcessing, clearProcessingEvents } = useProcessing()
-  const { schemaLevels } = useSchema()
+  const { schemaLevels, applyPreset } = useSchema()
   const [selectedInputPath, setSelectedInputPath] = useState("")
   const [passProgress, setPassProgress] = useState<Map<number, {pass: number; status: "pending" | "running" | "completed"; inputChars?: number; outputChars?: number; currentStage?: string}>>(new Map())
   const [downloadModalOpen, setDownloadModalOpen] = useState(false)
@@ -138,6 +138,77 @@ export default function ProcessingControls() {
   useEffect(() => {
     
   }, [isProcessing])
+
+  // Map aggressiveness levels to schema presets
+  const getAggressivenessPreset = (level: string): Record<string, number> | null => {
+    const presets: Record<string, Record<string, number>> = {
+      low: {
+        // Conservative preset - minimal changes
+        microstructure_control: 1,
+        macrostructure_analysis: 0,
+        anti_scanner_techniques: 1,
+        entropy_management: 1,
+        semantic_tone_tuning: 0,
+        formatting_safeguards: 3,
+        refiner_control: 1,
+        history_analysis: 1,
+        annotation_mode: 0,
+        humanize_academic: 1,
+      },
+      medium: {
+        // Balanced preset - moderate refinement
+        microstructure_control: 2,
+        macrostructure_analysis: 1,
+        anti_scanner_techniques: 2,
+        entropy_management: 2,
+        semantic_tone_tuning: 1,
+        formatting_safeguards: 3,
+        refiner_control: 2,
+        history_analysis: 1,
+        annotation_mode: 0,
+        humanize_academic: 2,
+      },
+      high: {
+        // Aggressive preset - maximum detection reduction
+        microstructure_control: 3,
+        macrostructure_analysis: 2,
+        anti_scanner_techniques: 3,
+        entropy_management: 3,
+        semantic_tone_tuning: 2,
+        formatting_safeguards: 2,
+        refiner_control: 3,
+        history_analysis: 2,
+        annotation_mode: 1,
+        humanize_academic: 3,
+      },
+      "very-high": {
+        // Very High preset - extreme refinement
+        microstructure_control: 3,
+        macrostructure_analysis: 3,
+        anti_scanner_techniques: 3,
+        entropy_management: 3,
+        semantic_tone_tuning: 3,
+        formatting_safeguards: 1,
+        refiner_control: 3,
+        history_analysis: 3,
+        annotation_mode: 2,
+        humanize_academic: 3,
+      },
+    }
+    return presets[level] || null
+  }
+
+  const handleAggressivenessChange = (newLevel: string) => {
+    setSettings({ ...settings, aggressiveness: newLevel })
+    
+    // Apply schema preset based on aggressiveness level (skip "auto")
+    if (newLevel !== "auto") {
+      const preset = getAggressivenessPreset(newLevel)
+      if (preset) {
+        applyPreset(preset)
+      }
+    }
+  }
 
   const handleStartProcessing = async () => {
     // Check if we have a selected input path or uploaded files
@@ -618,7 +689,7 @@ export default function ProcessingControls() {
           <Label className="text-card-foreground">Aggressiveness</Label>
           <select
             value={settings.aggressiveness}
-            onChange={(e) => setSettings({ ...settings, aggressiveness: e.target.value })}
+            onChange={(e) => handleAggressivenessChange(e.target.value)}
             className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
           >
             <option value="auto">Auto</option>
@@ -627,6 +698,11 @@ export default function ProcessingControls() {
             <option value="high">High</option>
             <option value="very-high">Very High</option>
           </select>
+          {settings.aggressiveness !== "auto" && (
+            <div className="text-xs text-muted-foreground">
+              Schema levels adjusted automatically for {settings.aggressiveness} aggressiveness
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">
