@@ -9,6 +9,8 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Ensure pages that use dynamic features are not statically generated
+  output: 'standalone',
 }
 
 export default nextConfig
