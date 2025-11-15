@@ -285,7 +285,7 @@ export default function ProcessingControls() {
         )
       }
       
-      const files = uploadedFilesList.map(file => ({
+      const refinementFiles = uploadedFilesList.map(file => ({
         // Use backend file_id as the primary identifier (from upload response)
         id: (file as any).driveId || file.id,
         name: file.name,
@@ -303,7 +303,7 @@ export default function ProcessingControls() {
       
       await refinerClient.startRefinement(
         {
-          files,
+          files: refinementFiles,
           // Ensure backend-compatible local output target (mapped by API route)
           output: { type: 'local', dir: './output' },
           passes: settings.passes,
@@ -451,7 +451,7 @@ export default function ProcessingControls() {
           
           // Ensure fileName is present on events for downstream components (Results/Diff)
           if (!event.fileName && event.fileId) {
-            const src = files.find(f => (f.id === event.fileId || (f as any).driveId === event.fileId))
+            const src = refinementFiles.find(f => (f.id === event.fileId || (f as any).driveId === event.fileId))
             if (src) event.fileName = src.name
           }
           // Normalize output path for ResultsViewer from backend metrics
