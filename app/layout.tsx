@@ -12,6 +12,7 @@ import { AuthProvider } from "@/contexts/AuthContext"
 import { LoadingProvider } from "@/contexts/LoadingContext"
 import LoadingBar from "@/components/loading-bar"
 import GlobalLoadingBar from "@/components/global-loading-bar"
+import { Suspense } from "react"
 
 const figtree = Figtree({
   subsets: ["latin"],
@@ -50,7 +51,9 @@ export default function RootLayout({
                 <SchemaProvider>
                   <AnalyticsProvider>
                     <LoadingBar />
-                    <GlobalLoadingBar />
+                    <Suspense fallback={null}>
+                      <GlobalLoadingBar />
+                    </Suspense>
                     {children}
                   </AnalyticsProvider>
                 </SchemaProvider>
