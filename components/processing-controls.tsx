@@ -1,0 +1,928 @@
+"use client"
+
+import { useState, useEffect, useRef } from "react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { refinerClient, type ProcessingEvent } from "@/lib/refiner-client"
+import { useFiles } from "@/contexts/FileContext"
+import { useProcessing } from "@/contexts/ProcessingContext"
+import { useSchema } from "@/contexts/SchemaContext"
+import FileBrowser from "./file-browser"
+import DownloadModal from "./download-modal"
+import { Download } from "lucide-react"
+
+export default function ProcessingControls() {
+  const { getUploadedFiles } = useFiles()
+  const { processingEvents, addProcessingEvent, isProcessing, setIsProcessing, clearProcessingEvents } = useProcessing()
+  const { schemaLevels } = useSchema()
+  const [selectedInputPath, setSelectedInputPath] = useState("")
+  const [passProgress, setPassProgress] = useState<Map<number, {pass: number; status: "pending" | "running" | "completed"; inputChars?: number; outputChars?: number; currentStage?: string}>>(new Map())
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false)
+  const [completedFiles, setCompletedFiles] = useState<Array<{fileId: string; fileName: string; passes: {passNumber: number; path: string; size?: number; cost?: any}[]}>>([])
+  const [totalJobCost, setTotalJobCost] = useState(0)
+  const [currentPassCost, setCurrentPassCost] = useState(0)
+  const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const stuckCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const isProcessingRef = useRef(isProcessing)
+  const processingEventsRef = useRef(processingEvents)
+  const [settings, setSettings] = useState({
+    passes: 3,
+    aggressiveness: "auto",
+    scannerRisk: 15,
+    keywords: "",
+    earlyStop: true,
+    strategyMode: "model" as "model" | "rules",
+    entropy: {
+      riskPreference: 0.5,
+      repeatPenalty: 0.0,
+      phrasePenalty: 0.0,
+    },
+    formattingMode: "smart" as "smart" | "strict",
+    historyEnabled: false,
+    refinerStrength: 2,
+    dryRun: false,
+    annotation: { enabled: false, mode: "inline" as "inline" | "sidecar", verbosity: "low" as "low" | "medium" | "high" },
+  })
+
+  // Load settings and file selection from localStorage on mount
+  useEffect(() => {
+    const savedSettings = localStorage.getItem('refiner-processing-settings')
+    const savedFileSelection = localStorage.getItem('refiner-selected-file')
+    
+    if (savedSettings) {
+      try {
+        const parsedSettings = JSON.parse(savedSettings)
+        // Ensure numeric values are valid numbers
+        const validatedSettings = {
+          ...parsedSettings,
+          passes: typeof parsedSettings.passes === 'number' && !isNaN(parsedSettings.passes) ? parsedSettings.passes : 3,
+          scannerRisk: typeof parsedSettings.scannerRisk === 'number' && !isNaN(parsedSettings.scannerRisk) ? parsedSettings.scannerRisk : 15,
+          refinerStrength: typeof parsedSettings.refinerStrength === 'number' && !isNaN(parsedSettings.refinerStrength) ? parsedSettings.refinerStrength : 2,
+          entropy: {
+            riskPreference: typeof parsedSettings.entropy?.riskPreference === 'number' && !isNaN(parsedSettings.entropy.riskPreference) ? parsedSettings.entropy.riskPreference : 0.5,
+            repeatPenalty: typeof parsedSettings.entropy?.repeatPenalty === 'number' && !isNaN(parsedSettings.entropy.repeatPenalty) ? parsedSettings.entropy.repeatPenalty : 0.0,
+            phrasePenalty: typeof parsedSettings.entropy?.phrasePenalty === 'number' && !isNaN(parsedSettings.entropy.phrasePenalty) ? parsedSettings.entropy.phrasePenalty : 0.0,
+          }
+        }
+        setSettings(prev => ({ ...prev, ...validatedSettings }))
+      } catch (error) {
+        console.error('Failed to load processing settings:', error)
+      }
+    }
+    
+    // Load selected file path
+    if (savedFileSelection) {
+      try {
+        const parsedFileSelection = JSON.parse(savedFileSelection)
+        if (parsedFileSelection.path) {
+          setSelectedInputPath(parsedFileSelection.path)
+        }
+      } catch (error) {
+        console.error('Failed to load file selection:', error)
+      }
+    }
+  }, [])
+
+
+  // Save settings to localStorage whenever settings change
+  useEffect(() => {
+    localStorage.setItem('refiner-processing-settings', JSON.stringify(settings))
+  }, [settings])
+
+  // Save file selection to localStorage whenever it changes
+  useEffect(() => {
+    if (selectedInputPath) {
+      localStorage.setItem('refiner-selected-file', JSON.stringify({ path: selectedInputPath }))
+    }
+  }, [selectedInputPath])
+
+  // Debug isProcessing state changes (disabled)
+  useEffect(() => {
+    
+    isProcessingRef.current = isProcessing
+  }, [isProcessing])
+
+  // Update processingEvents ref
+  useEffect(() => {
+    processingEventsRef.current = processingEvents
+  }, [processingEvents])
+
+  // Rebuild completedFiles from processingEvents as a reliable fallback
+  useEffect(() => {
+    try {
+      const byFile: Record<string, { fileId: string; fileName: string; passes: { passNumber: number; path: string; size?: number; cost?: any }[] }> = {}
+      for (const ev of processingEvents) {
+        const anyEv: any = ev as any
+        if (anyEv.type === 'pass_complete' && (anyEv.outputPath || anyEv.metrics?.localPath) && anyEv.pass) {
+          const fid = anyEv.fileId || 'unknown'
+          const fname = anyEv.fileName || `File ${fid}`
+          const path = anyEv.outputPath || anyEv.metrics?.localPath
+          byFile[fid] = byFile[fid] || { fileId: fid, fileName: fname, passes: [] }
+          if (!byFile[fid].passes.find(p => p.passNumber === anyEv.pass)) {
+            byFile[fid].passes.push({ passNumber: anyEv.pass, path, size: anyEv.outputChars, cost: anyEv.cost })
+          }
+        }
+      }
+      const options = Object.values(byFile).map(opt => ({
+        ...opt,
+        passes: opt.passes.sort((a, b) => a.passNumber - b.passNumber)
+      }))
+      setCompletedFiles(options)
+    } catch {}
+  }, [processingEvents])
+
+  // Debug button re-rendering (disabled)
+  useEffect(() => {
+    
+  }, [isProcessing])
+
+  const handleStartProcessing = async () => {
+    // Check if we have a selected input path or uploaded files
+    if (!selectedInputPath && getUploadedFiles().length === 0) {
+      alert("Please select an input file or upload files before starting processing.")
+      return
+    }
+    
+    setIsProcessing(true)
+    setTotalJobCost(0)
+    setCurrentPassCost(0)
+    // Don't clear previous events - preserve processing history
+    // clearProcessingEvents() // REMOVED: This was causing loss of previous processing data
+    
+    // Set a timeout fallback to prevent infinite processing state
+    processingTimeoutRef.current = setTimeout(() => {
+      
+      setIsProcessing(false)
+      setPassProgress(new Map())
+      window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: { type: "timeout" } }))
+    }, 10 * 60 * 1000) // 10 minutes timeout
+    
+    // Also set a shorter timeout to check for stuck processing
+    stuckCheckTimeoutRef.current = setTimeout(() => {
+      // Check current state using ref
+      if (isProcessingRef.current) {
+        
+        // Try to get job status to see if it's actually complete
+        if (processingEventsRef.current.length > 0) {
+          const lastEvent = processingEventsRef.current[processingEventsRef.current.length - 1]
+          
+          if (lastEvent && (lastEvent.type === "stream_end" || lastEvent.type === "complete")) {
+            
+            setIsProcessing(false)
+            setPassProgress(new Map())
+            window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: lastEvent }))
+          } else {
+            // Check if we have pass_complete events but no stream_end
+            const passCompleteEvents = processingEventsRef.current.filter(e => e.type === "pass_complete")
+            if (passCompleteEvents.length > 0) {
+              
+              // If we have pass_complete events and it's been a while, assume completion
+              const lastPassEvent = passCompleteEvents[passCompleteEvents.length - 1]
+              
+              if (lastPassEvent && lastPassEvent.pass && lastPassEvent.pass >= 3) {
+                
+                setIsProcessing(false)
+                setPassProgress(new Map())
+                window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: { type: "assumed_complete", lastPass: lastPassEvent } }))
+              }
+            }
+          }
+        }
+      }
+    }, 2 * 60 * 1000) // 2 minutes check
+
+    try {
+      
+      
+      // Use selected input path if available, otherwise fall back to uploaded files
+          const files = selectedInputPath 
+        ? [{ id: "selected_file", name: "Selected File", type: "local" as const, source: selectedInputPath }]
+        : getUploadedFiles().map(file => ({
+            id: (file as any).driveId || file.id,
+            name: file.name,
+            // Narrow to allowed union for API contract
+            type: (file.type === 'drive' ? 'drive' : 'local') as 'local' | 'drive',
+            source: file.source,
+            driveId: (file as any).driveId
+          }))
+      
+      await refinerClient.startRefinement(
+        {
+          files,
+          // Ensure backend-compatible local output target (mapped by API route)
+          output: { type: 'local', dir: './output' },
+          passes: settings.passes,
+          earlyStop: settings.earlyStop,
+          aggressiveness: settings.aggressiveness,
+          scannerRisk: settings.scannerRisk,
+          keywords: settings.keywords
+            .split(",")
+            .map((k) => k.trim())
+            .filter(Boolean),
+          // Pass through strategy mode to backend via schema flag for simplicity
+          // Backend reads heuristics.strategy_mode or env; route can map this as needed
+          // Here we add a meta field understood by the API route
+          strategy_mode: settings.strategyMode,
+          // Use schema-derived formatting safeguards
+          formatting_safeguards: { 
+            enabled: (schemaLevels.find(s => s.id === 'formatting_safeguards')?.value || 3) > 0, 
+            mode: (schemaLevels.find(s => s.id === 'formatting_safeguards')?.value || 3) >= 3 ? 'strict' : 'smart' 
+          },
+          // Use schema-derived analysis settings
+          history_analysis: { 
+            enabled: (schemaLevels.find(s => s.id === 'history_analysis')?.value || 1) > 0
+          },
+          refiner_dry_run: settings.dryRun,
+          // Use schema-derived annotation settings
+          annotation_mode: { 
+            enabled: (schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0) > 0, 
+            mode: (schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0) === 1 ? 'inline' : 'sidecar',
+            verbosity: (schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0) === 1 ? 'low' : 
+                      (schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0) === 2 ? 'medium' : 'high'
+          },
+          // Map schema levels to heuristics for backend processing
+          heuristics: {
+            // Core processing flags
+            microstructure_control: (schemaLevels.find(s => s.id === 'microstructure_control')?.value || 2) > 0,
+            macrostructure_analysis: (schemaLevels.find(s => s.id === 'macrostructure_analysis')?.value || 1) > 0,
+            anti_scanner_techniques: (schemaLevels.find(s => s.id === 'anti_scanner_techniques')?.value || 3) > 0,
+            
+            // Control levels
+            refiner_control: schemaLevels.find(s => s.id === 'refiner_control')?.value || 2,
+            entropy_management: schemaLevels.find(s => s.id === 'entropy_management')?.value || 2,
+            semantic_tone_tuning: schemaLevels.find(s => s.id === 'semantic_tone_tuning')?.value || 1,
+            
+            // Feature toggles
+            history_analysis: (schemaLevels.find(s => s.id === 'history_analysis')?.value || 1) > 0,
+            annotation_mode: (schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0) > 0,
+            
+            // Humanizer settings
+            humanize_academic: {
+              enabled: (schemaLevels.find(s => s.id === 'humanize_academic')?.value || 2) > 0,
+              intensity: (schemaLevels.find(s => s.id === 'humanize_academic')?.value || 2) === 1 ? 'light' : 
+                        (schemaLevels.find(s => s.id === 'humanize_academic')?.value || 2) === 2 ? 'medium' : 'strong',
+            },
+            
+            // Formatting safeguards
+            formatting_safeguards: {
+              enabled: (schemaLevels.find(s => s.id === 'formatting_safeguards')?.value || 3) > 0,
+              mode: (schemaLevels.find(s => s.id === 'formatting_safeguards')?.value || 3) >= 3 ? 'strict' : 'smart',
+            },
+            
+            // Keywords from settings
+            keywords: settings.keywords.split(",").map((k) => k.trim()).filter(Boolean),
+            
+            // Strategy weights (derived from schema levels)
+            strategy_weights: {
+              clarity: Math.min(1.0, 0.3 + ((schemaLevels.find(s => s.id === 'semantic_tone_tuning')?.value || 1) * 0.2)),
+              persuasion: Math.min(1.0, 0.2 + ((schemaLevels.find(s => s.id === 'anti_scanner_techniques')?.value || 3) * 0.15)),
+              brevity: Math.min(1.0, 0.2 + ((schemaLevels.find(s => s.id === 'microstructure_control')?.value || 2) * 0.1)),
+              formality: Math.min(1.0, 0.4 + ((schemaLevels.find(s => s.id === 'humanize_academic')?.value || 2) * 0.1)),
+            },
+            
+            // Entropy settings (derived from schema levels)
+            entropy: {
+              risk_preference: Math.min(1.0, 0.3 + ((schemaLevels.find(s => s.id === 'entropy_management')?.value || 2) * 0.2)),
+              repeat_penalty: Math.min(1.0, (schemaLevels.find(s => s.id === 'anti_scanner_techniques')?.value || 3) * 0.3),
+              phrase_penalty: Math.min(1.0, (schemaLevels.find(s => s.id === 'anti_scanner_techniques')?.value || 3) * 0.2),
+            },
+          },
+          // Pass schema levels for tracking
+          schemaLevels: {
+            microstructure_control: schemaLevels.find(s => s.id === 'microstructure_control')?.value || 2,
+            macrostructure_analysis: schemaLevels.find(s => s.id === 'macrostructure_analysis')?.value || 1,
+            anti_scanner_techniques: schemaLevels.find(s => s.id === 'anti_scanner_techniques')?.value || 3,
+            entropy_management: schemaLevels.find(s => s.id === 'entropy_management')?.value || 2,
+            semantic_tone_tuning: schemaLevels.find(s => s.id === 'semantic_tone_tuning')?.value || 1,
+            formatting_safeguards: schemaLevels.find(s => s.id === 'formatting_safeguards')?.value || 3,
+            refiner_control: schemaLevels.find(s => s.id === 'refiner_control')?.value || 2,
+            history_analysis: schemaLevels.find(s => s.id === 'history_analysis')?.value || 1,
+            annotation_mode: schemaLevels.find(s => s.id === 'annotation_mode')?.value || 0,
+            humanize_academic: schemaLevels.find(s => s.id === 'humanize_academic')?.value || 2,
+          },
+        },
+        (event: ProcessingEvent) => {
+          
+          
+          // Check for completion events FIRST - before any other processing
+          const eventType = (event as any).type || event.type
+          if (eventType === "complete" || eventType === "stream_end" || eventType === "done") {
+            
+            
+            // Clear the timeouts since we completed successfully
+            if (processingTimeoutRef.current) {
+              clearTimeout(processingTimeoutRef.current)
+              processingTimeoutRef.current = null
+            }
+            if (stuckCheckTimeoutRef.current) {
+              clearTimeout(stuckCheckTimeoutRef.current)
+              stuckCheckTimeoutRef.current = null
+            }
+            
+            // Record terminal event so other components can observe it in history
+            try { addProcessingEvent(event) } catch {}
+
+            // Force state update immediately - no need for setTimeout
+            setIsProcessing(false)
+            setPassProgress(new Map())
+            
+            
+            // Trigger a refresh of results and analytics
+            window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: event }))
+            
+            
+            return // Exit early to avoid duplicate processing
+          }
+          
+          // Check for error events SECOND
+          if (event.type === "error") {
+            
+            // Clear the timeouts on error
+            if (processingTimeoutRef.current) {
+              clearTimeout(processingTimeoutRef.current)
+              processingTimeoutRef.current = null
+            }
+            if (stuckCheckTimeoutRef.current) {
+              clearTimeout(stuckCheckTimeoutRef.current)
+              stuckCheckTimeoutRef.current = null
+            }
+            // Record error event in history so UI can react
+            try { addProcessingEvent(event) } catch {}
+            alert(`Processing failed: ${event.error || event.message || "Unknown error"}`)
+            setIsProcessing(false)
+            setPassProgress(new Map()) // Clear progress on error
+            return // Exit early to avoid duplicate processing
+          }
+          
+          // Ensure fileName is present on events for downstream components (Results/Diff)
+          if (!event.fileName && event.fileId) {
+            const src = files.find(f => (f.id === event.fileId || (f as any).driveId === event.fileId))
+            if (src) event.fileName = src.name
+          }
+          // Normalize output path for ResultsViewer from backend metrics
+          if (event.type === 'pass_complete') {
+            
+            
+            if (!event.outputPath && (event as any).metrics?.localPath) {
+              try { (event as any).outputPath = (event as any).metrics.localPath } catch {}
+            }
+          }
+          addProcessingEvent(event)
+          
+          // Track pass progression
+          const ev = event as any
+          if (ev.type === "pass_start") {
+            setPassProgress(prev => {
+              const newMap = new Map(prev)
+              // Initialize all pending passes
+              for (let i = 1; i <= settings.passes; i++) {
+                if (!newMap.has(i)) {
+                  newMap.set(i, { pass: i, status: "pending" })
+                }
+              }
+              // Mark current pass as running
+              newMap.set(ev.pass, { pass: ev.pass, status: "running", currentStage: "starting" })
+              // Emit progress event
+              window.dispatchEvent(new CustomEvent("refiner-pass-progress", { 
+                detail: { passProgress: Array.from(newMap.values()), totalPasses: settings.passes }
+              }))
+              return newMap
+            })
+          }
+          
+          if (ev.type === "stage_update" && ev.pass) {
+            setPassProgress(prev => {
+              const newMap = new Map(prev)
+              const current = newMap.get(ev.pass) || { pass: ev.pass, status: "running" as const, inputChars: undefined, outputChars: undefined, currentStage: undefined }
+              current.currentStage = ev.stage
+              current.status = "running"
+              newMap.set(ev.pass, current)
+              window.dispatchEvent(new CustomEvent("refiner-pass-progress", { 
+                detail: { passProgress: Array.from(newMap.values()), totalPasses: settings.passes }
+              }))
+              return newMap
+            })
+          }
+          
+          if (ev.type === "pass_complete" && ev.pass) {
+            setPassProgress(prev => {
+              const newMap = new Map(prev)
+              const current = newMap.get(ev.pass) || { pass: ev.pass, status: "completed" as const, inputChars: undefined, outputChars: undefined, currentStage: undefined }
+              current.status = "completed"
+              current.inputChars = ev.inputChars
+              current.outputChars = ev.outputChars
+              newMap.set(ev.pass, current)
+              window.dispatchEvent(new CustomEvent("refiner-pass-progress", { 
+                detail: { passProgress: Array.from(newMap.values()), totalPasses: settings.passes }
+              }))
+              // Emit diff meta so DiffViewer can load correct ids/passes
+              try {
+                const completedPasses = Array.from(newMap.values())
+                  .filter(p => p.status === "completed")
+                  .map(p => p.pass)
+                  .sort((a, b) => a - b)
+                if (ev.fileId) {
+                  window.dispatchEvent(new CustomEvent("refiner-diff-meta", {
+                    detail: { fileId: ev.fileId, fileName: ev.fileName, availablePasses: completedPasses }
+                  }))
+                }
+              } catch {}
+              return newMap
+            })
+            
+            // Track completed files for download
+            if (ev.fileId && ev.pass && (ev.outputPath || ev.metrics?.localPath)) {
+              const filePath = ev.outputPath || ev.metrics?.localPath
+              setCompletedFiles(prev => {
+                const existing = prev.find(f => f.fileId === ev.fileId)
+                if (existing) {
+                  // Add this pass if it doesn't exist
+                  if (!existing.passes.find(p => p.passNumber === ev.pass)) {
+                    existing.passes.push({
+                      passNumber: ev.pass,
+                      path: filePath,
+                      size: ev.outputChars,
+                      cost: ev.cost
+                    })
+                    existing.passes.sort((a, b) => a.passNumber - b.passNumber)
+                  }
+                  return [...prev]
+                } else {
+                  // Create new file entry
+                  return [...prev, {
+                    fileId: ev.fileId,
+                    fileName: ev.fileName || `File ${ev.fileId}`,
+                    passes: [{
+                      passNumber: ev.pass,
+                      path: filePath,
+                      size: ev.outputChars,
+                      cost: ev.cost
+                    }]
+                  }]
+                }
+              })
+            }
+            
+            // Update cost tracking
+            if (ev.cost) {
+              setCurrentPassCost(ev.cost.totalCost || 0)
+              setTotalJobCost(prev => prev + (ev.cost?.totalCost || 0))
+            }
+          }
+          
+          // Update input/output character counts from progress events
+          if (ev.type === "progress" && ev.pass) {
+            setPassProgress(prev => {
+              const newMap = new Map(prev)
+              const current = newMap.get(ev.pass) || { pass: ev.pass, status: "running" as const, inputChars: undefined, outputChars: undefined, currentStage: undefined }
+              if (ev.inputSize) current.inputChars = ev.inputSize
+              if (ev.outputSize) current.outputChars = ev.outputSize
+              newMap.set(ev.pass, current)
+              window.dispatchEvent(new CustomEvent("refiner-pass-progress", { 
+                detail: { passProgress: Array.from(newMap.values()), totalPasses: settings.passes }
+              }))
+              return newMap
+            })
+          }
+          
+          // Bubble plan/strategy snapshot via CustomEvent for Dashboard -> PlanKnobs
+          if ((event as any).type === "plan" || (event as any).type === "strategy") {
+            window.dispatchEvent(new CustomEvent("refiner-plan", { detail: event }))
+          }
+        },
+      )
+    } catch (error) {
+      console.error("Processing failed:", error)
+      // Clear the timeouts on error
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current)
+        processingTimeoutRef.current = null
+      }
+      if (stuckCheckTimeoutRef.current) {
+        clearTimeout(stuckCheckTimeoutRef.current)
+        stuckCheckTimeoutRef.current = null
+      }
+      alert(`Processing failed: ${error instanceof Error ? error.message : "Unknown error"}`)
+      setIsProcessing(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* File Browser */}
+      <FileBrowser
+        onFileSelect={setSelectedInputPath}
+        selectedInputPath={selectedInputPath}
+      />
+
+      {/* Processing Controls */}
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-card-foreground">Processing Controls</CardTitle>
+          <CardDescription className="text-muted-foreground">Configure refinement parameters</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Passes</Label>
+            <Input
+              type="number"
+              min="1"
+              max="10"
+              value={settings.passes}
+              onChange={(e) => {
+                const value = Number.parseInt(e.target.value)
+                if (!isNaN(value) && value >= 1 && value <= 10) {
+                  setSettings({ ...settings, passes: value })
+                }
+              }}
+              className="bg-input border-border text-foreground"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Scanner Risk (%)</Label>
+            <Input
+              type="number"
+              min="0"
+              max="100"
+              value={settings.scannerRisk}
+              onChange={(e) => {
+                const value = Number.parseInt(e.target.value)
+                if (!isNaN(value) && value >= 0 && value <= 100) {
+                  setSettings({ ...settings, scannerRisk: value })
+                }
+              }}
+              className="bg-input border-border text-foreground"
+            />
+          </div>
+        </div>
+
+        {/* Refiner Strength + Dry-Run */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Strength</Label>
+            <input
+              type="range"
+              min={0}
+              max={3}
+              step={1}
+              value={settings.refinerStrength}
+              onChange={(e) => {
+                const value = Number.parseInt(e.target.value)
+                if (!isNaN(value) && value >= 0 && value <= 3) {
+                  setSettings({ ...settings, refinerStrength: value })
+                }
+              }}
+            />
+            <div className="text-xs text-muted-foreground">Level {settings.refinerStrength}</div>
+          </div>
+          <div className="flex items-end">
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="dryRun"
+                checked={settings.dryRun}
+                onChange={(e) => setSettings({ ...settings, dryRun: e.target.checked })}
+                className="rounded"
+              />
+              <Label htmlFor="dryRun" className="text-card-foreground">Dry-run (plan only)</Label>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-card-foreground">Aggressiveness</Label>
+          <select
+            value={settings.aggressiveness}
+            onChange={(e) => setSettings({ ...settings, aggressiveness: e.target.value })}
+            className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
+          >
+            <option value="auto">Auto</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="very-high">Very High</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-card-foreground">Strategy Mode</Label>
+          <select
+            value={settings.strategyMode}
+            onChange={(e) => setSettings({ ...settings, strategyMode: e.target.value as any })}
+            className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
+          >
+            <option value="model">Model (default)</option>
+            <option value="rules">Rules (MVP)</option>
+          </select>
+        </div>
+
+        {/* Entropy Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Risk Preference</Label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.entropy.riskPreference}
+              onChange={(e) => {
+                const value = Number.parseFloat(e.target.value)
+                if (!isNaN(value) && value >= 0 && value <= 1) {
+                  setSettings({
+                    ...settings,
+                    entropy: { ...settings.entropy, riskPreference: value },
+                  })
+                }
+              }}
+            />
+            <div className="text-xs text-muted-foreground">{Math.round(settings.entropy.riskPreference * 100)}%</div>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Repeat Penalty</Label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.entropy.repeatPenalty}
+              onChange={(e) => {
+                const value = Number.parseFloat(e.target.value)
+                if (!isNaN(value) && value >= 0 && value <= 1) {
+                  setSettings({
+                    ...settings,
+                    entropy: { ...settings.entropy, repeatPenalty: value },
+                  })
+                }
+              }}
+            />
+            <div className="text-xs text-muted-foreground">{Math.round(settings.entropy.repeatPenalty * 100)}%</div>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Phrase Penalty</Label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.entropy.phrasePenalty}
+              onChange={(e) => {
+                const value = Number.parseFloat(e.target.value)
+                if (!isNaN(value) && value >= 0 && value <= 1) {
+                  setSettings({
+                    ...settings,
+                    entropy: { ...settings.entropy, phrasePenalty: value },
+                  })
+                }
+              }}
+            />
+            <div className="text-xs text-muted-foreground">{Math.round(settings.entropy.phrasePenalty * 100)}%</div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-card-foreground">Formatting Safeguards</Label>
+          <select
+            value={settings.formattingMode}
+            onChange={(e) => setSettings({ ...settings, formattingMode: e.target.value as any })}
+            className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
+          >
+            <option value="smart">Smart (preserve code/tables)</option>
+            <option value="strict">Strict (also lock lists/headings)</option>
+          </select>
+        </div>
+
+        {/* History Analysis Toggle + Profile Preview */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="historyEnabled"
+              checked={settings.historyEnabled}
+              onChange={(e) => setSettings({ ...settings, historyEnabled: e.target.checked })}
+              className="rounded"
+            />
+            <Label htmlFor="historyEnabled" className="text-card-foreground">
+              Enable History Analysis
+            </Label>
+          </div>
+          <button
+            type="button"
+            className="text-xs text-muted-foreground underline"
+            onClick={async () => {
+              try {
+                const res = await fetch("/api/history/profile")
+                const p = await res.json()
+                alert(`History profile\nbrevity: ${Math.round(p.brevity_bias*100)}%\nformality: ${Math.round(p.formality_bias*100)}%\nstructure: ${Math.round(p.structure_bias*100)}%`)
+              } catch (e) {
+                alert("Failed to load history profile")
+              }
+            }}
+          >
+            View Derived Profile
+          </button>
+        </div>
+
+        {/* Annotation Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="annotationEnabled"
+              checked={settings.annotation.enabled}
+              onChange={(e) => setSettings({ ...settings, annotation: { ...settings.annotation, enabled: e.target.checked } })}
+              className="rounded"
+            />
+            <Label htmlFor="annotationEnabled" className="text-card-foreground">Annotations</Label>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Mode</Label>
+            <select
+              value={settings.annotation.mode}
+              onChange={(e) => setSettings({ ...settings, annotation: { ...settings.annotation, mode: e.target.value as any } })}
+              className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
+            >
+              <option value="inline">Inline</option>
+              <option value="sidecar">Sidecar</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-card-foreground">Verbosity</Label>
+            <select
+              value={settings.annotation.verbosity}
+              onChange={(e) => setSettings({ ...settings, annotation: { ...settings.annotation, verbosity: e.target.value as any } })}
+              className="w-full px-3 py-2 rounded-md bg-input border border-border text-foreground"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-card-foreground">Keywords (comma-separated)</Label>
+          <Input
+            placeholder="keyword1, keyword2, keyword3"
+            value={settings.keywords}
+            onChange={(e) => setSettings({ ...settings, keywords: e.target.value })}
+            className="bg-input border-border text-foreground placeholder:text-muted-foreground"
+          />
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <input
+            type="checkbox"
+            id="earlyStop"
+            checked={settings.earlyStop}
+            onChange={(e) => setSettings({ ...settings, earlyStop: e.target.checked })}
+            className="rounded"
+          />
+          <Label htmlFor="earlyStop" className="text-card-foreground">
+            Early stop when target risk reached
+          </Label>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <Button
+            onClick={handleStartProcessing}
+            disabled={isProcessing || (!selectedInputPath && getUploadedFiles().length === 0)}
+            className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {isProcessing ? (
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <span>Processing...</span>
+              </div>
+            ) : 
+             (!selectedInputPath && getUploadedFiles().length === 0) ? "Select file" :
+             `Start (${selectedInputPath ? '1' : getUploadedFiles().length})`}
+          </Button>
+          
+          {/* Reset button (Force Reset while processing, Reset otherwise) */}
+          {isProcessing ? (
+            <Button
+              onClick={() => {
+                
+                setIsProcessing(false)
+                setPassProgress(new Map())
+                if (processingTimeoutRef.current) {
+                  clearTimeout(processingTimeoutRef.current)
+                  processingTimeoutRef.current = null
+                }
+                if (stuckCheckTimeoutRef.current) {
+                  clearTimeout(stuckCheckTimeoutRef.current)
+                  stuckCheckTimeoutRef.current = null
+                }
+                window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: { type: "manual_force_reset" } }))
+              }}
+              variant="outline"
+              className="text-xs"
+            >
+              Force Reset
+            </Button>
+          ) : (
+            <Button
+              onClick={() => {
+                
+                setIsProcessing(false)
+                setPassProgress(new Map())
+                if (processingTimeoutRef.current) {
+                  clearTimeout(processingTimeoutRef.current)
+                  processingTimeoutRef.current = null
+                }
+                if (stuckCheckTimeoutRef.current) {
+                  clearTimeout(stuckCheckTimeoutRef.current)
+                  stuckCheckTimeoutRef.current = null
+                }
+                window.dispatchEvent(new CustomEvent("refiner-processing-complete", { detail: { type: "manual_reset" } }))
+              }}
+              variant="outline"
+              className="border-orange-500 text-orange-600 hover:bg-orange-50"
+            >
+              Reset
+            </Button>
+          )}
+          
+          <Button
+            onClick={() => setDownloadModalOpen(true)}
+            disabled={completedFiles.length === 0}
+            variant="outline"
+            className="border-primary text-primary hover:bg-primary/10 disabled:opacity-50"
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Download {completedFiles.length > 0 && `(${completedFiles.length})`}
+          </Button>
+        </div>
+
+        {/* Processing Status */}
+        {isProcessing && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+            <div className="flex items-center space-x-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+              <span className="text-blue-800 font-medium">Processing in progress...</span>
+            </div>
+            <div className="text-blue-600 text-sm mt-1">
+              Check the progress events below for real-time updates.
+            </div>
+            {/* Cost Tracking */}
+            {(totalJobCost > 0 || currentPassCost > 0) && (
+              <div className="mt-2 flex gap-4 text-sm">
+                <div className="text-green-700">
+                  <span className="font-medium">Total Cost:</span> ${totalJobCost.toFixed(4)}
+                </div>
+                {currentPassCost > 0 && (
+                  <div className="text-blue-700">
+                    <span className="font-medium">Current Pass:</span> ${currentPassCost.toFixed(4)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Live Processing Events */}
+        {processingEvents.length > 0 && (
+          <div className="mt-6 space-y-2">
+            <h4 className="text-card-foreground font-medium text-sm">Live Progress</h4>
+            <div className="max-h-40 overflow-y-auto space-y-1">
+              {processingEvents.slice(-10).map((event, index) => (
+                <div key={index} className={`text-xs p-2 rounded border ${
+                  event.type === 'error' ? 'bg-red-50 border-red-200' :
+                  event.type === 'complete' ? 'bg-green-50 border-green-200' :
+                  'bg-muted border-border'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <Badge variant="outline" className={`text-xs ${
+                      event.type === 'error' ? 'border-red-300 text-red-700' :
+                      event.type === 'complete' ? 'border-green-300 text-green-700' :
+                      'text-muted-foreground border-border'
+                    }`}>
+                      {event.type}
+                    </Badge>
+                    {event.duration && <span className="text-muted-foreground">{event.duration}ms</span>}
+                  </div>
+                  {event.fileName && <div className="text-muted-foreground mt-1">{event.fileName}</div>}
+                  {event.stage && <div className="text-muted-foreground">Stage: {event.stage}</div>}
+                  {event.message && <div className="text-muted-foreground">Message: {event.message}</div>}
+                  {event.error && <div className="text-red-600">Error: {event.error}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+    
+    <DownloadModal 
+      open={downloadModalOpen}
+      onClose={() => setDownloadModalOpen(false)}
+      downloadOptions={completedFiles}
+    />
+    </div>
+  )
+}
