@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { FolderOpen, FileText, Upload, Download } from "lucide-react"
+import { useFiles } from "@/contexts/FileContext"
 
 interface FileBrowserProps {
   onFileSelect: (filePath: string) => void
@@ -17,6 +18,7 @@ export default function FileBrowser({
   onFileSelect, 
   selectedInputPath
 }: FileBrowserProps) {
+  const { addFile, updateFile } = useFiles()
   const [inputPath, setInputPath] = useState(selectedInputPath || "")
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -59,10 +61,45 @@ export default function FileBrowser({
     if (!file) return
 
     setIsLoading(true)
+    const fileId = `upload_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    
+    // Read file content for serverless compatibility
+    let fileContentBase64: string | null = null
+    try {
+      const reader = new FileReader()
+      fileContentBase64 = await new Promise<string | null>((resolve) => {
+        reader.onload = () => {
+          const result = reader.result as string
+          const base64 = result.split(',')[1] || result
+          resolve(base64)
+        }
+        reader.onerror = () => {
+          console.error('Failed to read file content')
+          resolve(null)
+        }
+        reader.readAsDataURL(file)
+      })
+    } catch (error) {
+      console.error('Failed to read file content:', error)
+    }
+
+    // Add file to context immediately
+    const newFile = {
+      id: fileId,
+      name: file.name,
+      size: file.size,
+      type: "local" as const,
+      source: file.name,
+      uploaded: false,
+      status: "uploading" as const,
+      fileContent: fileContentBase64 || undefined,
+    }
+    addFile(newFile)
+
     try {
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('file_id', `upload_${Date.now()}`)
+      formData.append('file_id', fileId)
 
       const response = await fetch('/api/drive/upload', {
         method: 'POST',
@@ -71,15 +108,36 @@ export default function FileBrowser({
 
       if (response.ok) {
         const result = await response.json()
-        const filePath = result.temp_path
+        const filePath = result.temp_path || result.file_path
+        
+        // Update file in context with upload result
+        updateFile(fileId, {
+          uploaded: true,
+          status: "uploaded",
+          driveId: result.file_id,
+          temp_path: filePath,
+          source: filePath || file.name,
+          fileContent: fileContentBase64 || undefined,
+        })
+        
         setInputPath(filePath)
         onFileSelect(filePath)
         await loadAvailableFiles() // Refresh file list
       } else {
+        updateFile(fileId, {
+          uploadError: 'Upload failed',
+          uploaded: false,
+          status: "error" as const,
+        })
         alert('File upload failed')
       }
     } catch (error) {
       console.error('Upload error:', error)
+      updateFile(fileId, {
+        uploadError: `Upload error: ${error}`,
+        uploaded: false,
+        status: "error" as const,
+      })
       alert('Upload failed')
     } finally {
       setIsLoading(false)

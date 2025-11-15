@@ -212,7 +212,11 @@ export default function ProcessingControls() {
 
   const handleStartProcessing = async () => {
     // Check if we have a selected input path or uploaded files
-    if (!selectedInputPath && getUploadedFiles().length === 0) {
+    const uploadedFiles = getUploadedFiles()
+    const hasUploadedFiles = uploadedFiles.length > 0
+    const hasSelectedPath = !!selectedInputPath
+    
+    if (!hasSelectedPath && !hasUploadedFiles) {
       alert("Please select an input file or upload files before starting processing.")
       return
     }
@@ -274,6 +278,34 @@ export default function ProcessingControls() {
       const uploadedFilesList = allFiles.filter(file => 
         file.uploaded === true || file.status === "uploaded" || file.status === "completed"
       )
+      
+      // If no uploaded files but we have selectedInputPath, try to use it
+      // This handles cases where file was uploaded but not properly tracked in context
+      if (uploadedFilesList.length === 0 && selectedInputPath) {
+        // Check if selectedInputPath matches any file in context
+        const matchingFile = files.find(f => 
+          f.source === selectedInputPath || 
+          f.temp_path === selectedInputPath ||
+          f.name === selectedInputPath.split('/').pop()
+        )
+        
+        if (matchingFile && (matchingFile.uploaded || matchingFile.status === "uploaded" || matchingFile.status === "completed")) {
+          uploadedFilesList.push(matchingFile)
+        } else {
+          // If no match found, create a temporary file entry from selectedInputPath
+          // This is a fallback for non-serverless environments
+          const tempFile = {
+            id: `temp_${Date.now()}`,
+            name: selectedInputPath.split('/').pop() || 'selected_file',
+            type: "local" as const,
+            source: selectedInputPath,
+            temp_path: selectedInputPath,
+            uploaded: true,
+            status: "uploaded" as const,
+          }
+          uploadedFilesList.push(tempFile)
+        }
+      }
       
       if (uploadedFilesList.length === 0) {
         const totalFiles = getUploadedFiles().length
